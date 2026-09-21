@@ -1,0 +1,79 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>VanguardParserMod</AssemblyName>
+    <RootNamespace>VanguardParserMod</RootNamespace>
+    <Version>0.0.1</Version>
+    <Description>VanguardParser BepInEx plugin</Description>
+    <RestoreAdditionalProjectSources>
+      https://api.nuget.org/v3/index.json;
+      https://nuget.bepinex.dev/v3/index.json;
+      https://nuget.samboy.dev/v3/index.json
+    </RestoreAdditionalProjectSources>    
+    <GameDir Condition="'$(GameDir)' == ''">g:\steamlibrary\steamapps\common\Vanguard Galaxy</GameDir>
+    <ManagedDir Condition="'$(ManagedDir)' == ''">$(GameDir)\VanguardGalaxy_Data\Managed</ManagedDir>
+    <BepInExCore Condition="'$(BepInExCore)' == ''">$(GameDir)\BepInEx\core</BepInExCore>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BepInEx.Analyzers" Version="1.*" PrivateAssets="all" />
+    <PackageReference Include="BepInEx.Core" Version="5.*" />
+    <PackageReference Include="BepInEx.PluginInfoProps" Version="2.*" />
+    <PackageReference Include="UnityEngine.Modules" Version="6000.2.6" IncludeAssets="compile" />
+    <!-- Pinned to 2.10.x: BepInEx 5 ships HarmonyX 2.10, and 2.16 adds a
+         transitive dep on MonoMod.Backports that BepInEx 5 doesn't load at
+         runtime (FileNotFoundException on plugin startup). -->
+    <PackageReference Include="HarmonyX" Version="2.10.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(ManagedDir)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- The panel is uGUI: canvas, image, pointer events and the game's own text component. These are ENGINE
+         assemblies rather than game ones, so they sit outside the branch check (refs/release-* pins only
+         Assembly-CSharp.dll) and carry no one-binary risk. -->
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(ManagedDir)\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(ManagedDir)\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(ManagedDir)\Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <!-- The shared settings host draws with IMGUI and reads legacy Input; both are needed to compile it. -->
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(ManagedDir)\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(ManagedDir)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  
+  <!-- Drop the built DLL straight into the game's plugin folder on every build, unless asked not to. -->
+  <Target Name="DeployToBepInEx" AfterTargets="Build" Condition="Exists('$(GameDir)\BepInEx\plugins') and '$(SkipDeploy)' != 'true'">
+    <Copy SourceFiles="$(TargetPath)"
+          DestinationFolder="$(GameDir)\BepInEx\plugins\$(AssemblyName)"
+          SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="Deployed $(AssemblyName).dll -> $(GameDir)\BepInEx\plugins\$(AssemblyName)" />
+  </Target>
+</Project>
