@@ -15,6 +15,8 @@
         public double maxHit { get; set; }
         public double minHit { get; set; }
         public int hitCount { get; set; }
+        public int CritCount { get; set; }
+        public double CritPercentage => hitCount > 0 ? (CritCount / (double)hitCount) : 0d;
         public double dps { get; set; }
 
         public double GetTotalDamage()
@@ -29,6 +31,7 @@
             this.maxHit = 0d;
             this.minHit = 0d;
             this.hitCount = 0;
+            this.CritCount = 0;
             this.ExtraHeat = 0d;
             this.ExtraCold = 0d;
             this.ExtraEnergy = 0d;

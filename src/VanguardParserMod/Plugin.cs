@@ -3,6 +3,7 @@ using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
+using Source.SpaceShip.Auto;
 using VGParserMod.Patches;
 using UnityEngine;
 
@@ -36,14 +37,36 @@ public class Plugin : BaseUnityPlugin
 
         _harmony = new Harmony(PluginGuid);
         DamageLoggingPatches.Register(_harmony);
+        TorpedoPatches.Register(_harmony);
+        CannonPatches.Register(_harmony);
         _harmony.PatchAll();
 
         Log.LogInfo($"{PluginName} v{PluginVersion} loaded ({_harmony.GetPatchedMethods().Count()} patches)");
     }
 
 
+    private float _lastPanelDraw;
+    private DockingState? _lastDockingState;
+
     private void Update()
     {
+        var currentShip = Source.Player.GamePlayer.current?.currentSpaceShip;
+        var currentDockingState = currentShip?.dockingState;
+        var undockedThisFrame = currentShip != null
+            && _lastDockingState == DockingState.Docked
+            && (currentDockingState == DockingState.Undocking || currentDockingState == DockingState.Leaving || currentDockingState == null);
+
+        if (undockedThisFrame)
+        {
+            DamageLoggingPatches.ClearCurrentDamage();
+            if (Panel.IsOpen)
+            {
+                Panel.Refresh(0f, 0d, new System.Collections.Generic.Dictionary<string, DamageCategory>());
+            }
+        }
+
+        _lastDockingState = currentDockingState;
+
         // Outside the 4 Hz gate below: the check hands its result over exactly once and `Pump` is what collects
         // it, so throttling this would only delay the row by up to a quarter second for no gain.
         // _notice?.Pump();
@@ -56,8 +79,6 @@ public class Plugin : BaseUnityPlugin
         var categories = DamageLoggingPatches.GetDamageByCategory();
         if (Panel.IsOpen) Panel.Refresh(dps, damage, categories);
     }
-
-    private float _lastPanelDraw;
 
     private void OnDestroy()
     {

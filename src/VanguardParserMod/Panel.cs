@@ -44,7 +44,10 @@ namespace VGParserMod
         private static TMP_Text? _body;
         private static GameObject? _chartRoot;
         private static Button? _clearButton;
+        private static Button? _chartToggleButton;
+        private static TMP_Text? _chartToggleLabel;
         private static bool _open;
+        private static bool _chartExpanded = true;
         private static bool _warned;
 
         internal static bool IsOpen => _open && _root != null;
@@ -81,6 +84,26 @@ namespace VGParserMod
         {
             DamageLoggingPatches.ClearCurrentDamage();
             Refresh(0f, 0d, new Dictionary<string, DamageCategory>());
+        }
+
+        private static void ToggleChartVisibility()
+        {
+            if (_chartRoot == null)
+            {
+                return;
+            }
+
+            _chartExpanded = !_chartExpanded;
+            _chartRoot.SetActive(_chartExpanded);
+            if (_chartToggleLabel != null)
+            {
+                _chartToggleLabel.text = _chartExpanded ? "v" : ">";
+            }
+
+            if (_root != null)
+            {
+                Refresh();
+            }
         }
 
         /// <summary>Lower a panel the WATCH raised. One the player opened is left alone.</summary>
@@ -164,6 +187,15 @@ namespace VGParserMod
             var rect = _rect;
             if (!IsOpen || body == null || title == null || rect == null || categories == null) return;
 
+            title.ForceMeshUpdate();
+            var head = Mathf.Max(22f, title.preferredHeight);
+            if (_chartRoot == null || !_chartRoot.activeSelf)
+            {
+                body.text = "";
+                rect.sizeDelta = new Vector2(Width, head + Pad * 2 + 8f);
+                return;
+            }
+
             // Rebuilding the row objects while the pointer is over the chart destroys the hovered element and
             // triggers TooltipSource.OnDestroy -> UITooltip.Hide, which causes the tooltip to flicker on every
             // refresh. Only suppress the rebuild while the mouse is actually over this chart area.
@@ -197,7 +229,7 @@ namespace VGParserMod
             // Measured AFTER the layout runs: `preferredHeight` read straight after a text assignment can still be
             // last frame's, which would place the body under the wrong header.
             title.ForceMeshUpdate();
-            var head = Mathf.Max(22f, title.preferredHeight);
+            head = Mathf.Max(22f, title.preferredHeight);
             body.rectTransform.anchoredPosition = new Vector2(Pad, -Pad - head - 2f);
 
             if (_chartRoot != null)
@@ -217,7 +249,7 @@ namespace VGParserMod
 
             var maxCategoryTotal = categories.Values.Max(x => x.GetTotalDamage());
             var rowIndex = 0;
-            var chartWidth = Width - Pad * 2f;
+            var chartWidth = Width;
             var chartHeight = 0f;
 
             foreach (var c in categories.Values.OrderByDescending(x => x.GetTotalDamage()))
@@ -244,6 +276,8 @@ namespace VGParserMod
                 breakdown.AppendLine($"DPS: {letterFormat((float)c.dps)}");
                 breakdown.AppendLine($"Base damage: {letterFormat((float)c.BaseTotal)}");
                 breakdown.AppendLine($"Hit count: {c.hitCount}");
+                breakdown.AppendLine($"Crit count: {c.CritCount}");
+                breakdown.AppendLine($"Crit percentage: {c.CritPercentage:P1}");
                 breakdown.AppendLine($"Avg hit: {letterFormat((float)(c.hitCount > 0 ? c.BaseTotal / c.hitCount : 0d))}");
                 breakdown.AppendLine($"Min hit: {letterFormat((float)(c.hitCount > 0 ? c.minHit : 0d))}");
                 breakdown.AppendLine($"Max hit: {letterFormat((float)(c.hitCount > 0 ? c.maxHit : 0d))}");
@@ -465,6 +499,46 @@ namespace VGParserMod
                 _body = Clone(template, window.transform, new Vector2(Pad, -Pad - 24f), Width - Pad * 2, 0f);
                 _body.textWrappingMode = TextWrappingModes.NoWrap;
 
+                var toggleGo = new GameObject("ChartToggleButton");
+                toggleGo.transform.SetParent(window.transform, false);
+                var toggleRt = toggleGo.AddComponent<RectTransform>();
+                toggleRt.anchorMin = new Vector2(1f, 1f);
+                toggleRt.anchorMax = new Vector2(1f, 1f);
+                toggleRt.pivot = new Vector2(1f, 1f);
+                toggleRt.anchoredPosition = new Vector2(-Pad - 68f, -Pad);
+                toggleRt.sizeDelta = new Vector2(22f, 22f);
+
+                var toggleBg = toggleGo.AddComponent<Image>();
+                toggleBg.sprite = CreateSolidSprite();
+                toggleBg.color = new Color(0.18f, 0.19f, 0.22f, 0.95f);
+                toggleBg.raycastTarget = true;
+
+                _chartToggleButton = toggleGo.AddComponent<Button>();
+                _chartToggleButton.targetGraphic = toggleBg;
+                _chartToggleButton.transition = Selectable.Transition.ColorTint;
+                _chartToggleButton.colors = new ColorBlock
+                {
+                    normalColor = new Color(0.18f, 0.19f, 0.22f, 0.95f),
+                    highlightedColor = new Color(0.28f, 0.30f, 0.35f, 1f),
+                    pressedColor = new Color(0.12f, 0.13f, 0.16f, 1f),
+                    selectedColor = new Color(0.18f, 0.19f, 0.22f, 0.95f),
+                    disabledColor = new Color(0.18f, 0.19f, 0.22f, 0.5f),
+                    colorMultiplier = 1f,
+                    fadeDuration = 0.05f
+                };
+                _chartToggleButton.onClick.AddListener(ToggleChartVisibility);
+
+                _chartToggleLabel = CreateText(toggleGo.transform, "v", new Vector2(0f, 0f), TextAlignmentOptions.Center,
+                    Color.white, 12f, 0.5f, 0.5f);
+                _chartToggleLabel.rectTransform.anchorMin = new Vector2(0f, 0f);
+                _chartToggleLabel.rectTransform.anchorMax = new Vector2(1f, 1f);
+                _chartToggleLabel.rectTransform.pivot = new Vector2(0.5f, 0.5f);
+                _chartToggleLabel.rectTransform.anchoredPosition = Vector2.zero;
+                _chartToggleLabel.rectTransform.sizeDelta = new Vector2(0f, 0f);
+                _chartToggleLabel.fontStyle = FontStyles.Bold;
+                _chartToggleLabel.outlineColor = Color.black;
+                _chartToggleLabel.outlineWidth = 0.2f;
+
                 var clearGo = new GameObject("ClearButton");
                 clearGo.transform.SetParent(window.transform, false);
                 var clearRt = clearGo.AddComponent<RectTransform>();
@@ -511,8 +585,8 @@ namespace VGParserMod
                 chartRt.anchorMin = new Vector2(0f, 1f);
                 chartRt.anchorMax = new Vector2(1f, 1f);
                 chartRt.pivot = new Vector2(0f, 1f);
-                chartRt.anchoredPosition = new Vector2(Pad, -Pad - 26f);
-                chartRt.sizeDelta = new Vector2(Width - Pad * 2f, 0f);
+                chartRt.anchoredPosition = new Vector2(0f, -Pad - 26f);
+                chartRt.sizeDelta = new Vector2(Width, 0f);
                 var chartMask = _chartRoot.AddComponent<RectMask2D>();
                 chartMask.padding = Vector4.zero;
                 chartMask.softness = Vector2Int.zero;
