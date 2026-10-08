@@ -15,6 +15,18 @@ public static class DamageLoggingPatches
 {
     private const string UiInfoTextParentTypeName = "Behaviour.UI.UIInfoTextParent, Assembly-CSharp";
     private static readonly Dictionary<string, DamageCategory> DamageByCategory = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConditionalWeakTable<DamageData, OriginalDamageSnapshot> OriginalDamageAmounts = new();
+
+    private sealed class OriginalDamageSnapshot
+    {
+        public float Amount { get; }
+
+        public OriginalDamageSnapshot(float amount)
+        {
+            Amount = amount;
+        }
+    }
+
     private static readonly TimeSpan PlayerDamageResetThreshold = TimeSpan.FromSeconds(20);
     private static double PlayerOutgoingTotalDamage = 0d;
     private static DateTime? PlayerOutgoingDamageFirstSeenUtc = null;
@@ -86,6 +98,12 @@ public static class DamageLoggingPatches
     {
         try
         {
+            var takeDamage = typeof(AbstractUnit).GetMethod(nameof(AbstractUnit.TakeDamage), BindingFlags.Instance | BindingFlags.Public, null, new[] { typeof(DamageData) }, null);
+            if (takeDamage != null)
+            {
+                harmony.Patch(takeDamage, prefix: new HarmonyMethod(typeof(DamageLoggingPatches).GetMethod(nameof(CaptureOriginalDamagePrefix), BindingFlags.Static | BindingFlags.NonPublic)!));
+            }
+
             var uiInfoTextParentType = Type.GetType(UiInfoTextParentTypeName, throwOnError: false);
             if (uiInfoTextParentType == null)
             {
@@ -117,6 +135,17 @@ public static class DamageLoggingPatches
         {
             Console.WriteLine($"[VGParserMod] DamageLoggingPatches registration failed: {ex}");
         }
+    }
+
+    private static void CaptureOriginalDamagePrefix(DamageData damageData)
+    {
+        if (damageData == null)
+        {
+            return;
+        }
+
+        OriginalDamageAmounts.Remove(damageData);
+        OriginalDamageAmounts.Add(damageData, new OriginalDamageSnapshot(damageData.totalDamageAmount));
     }
 
     private static bool HasParentComponent<T>(object? source) where T : Component
@@ -178,7 +207,10 @@ public static class DamageLoggingPatches
             return;
         }
 
-        ProcessDamageLog(damageData, damageData.targetUnit as AbstractUnit);
+        var originalDamageAmount = OriginalDamageAmounts.TryGetValue(damageData, out var snapshot)
+            ? snapshot.Amount
+            : damageData.totalDamageAmount;
+        ProcessDamageLog(damageData, damageData.targetUnit as AbstractUnit, originalDamageAmount);
     }
 
     private static bool IsTorpedoDamage(DamageData data)
@@ -191,16 +223,17 @@ public static class DamageLoggingPatches
         return CannonPatches.IsCannonExplosionDamage(data);
     }
 
-    private static void ProcessDamageLog(DamageData data, AbstractUnit? targetUnitOverride)
+    private static void ProcessDamageLog(DamageData data, AbstractUnit? targetUnitOverride, float originalDamageAmountOverride)
     {
         try
         {
             var now = DateTime.UtcNow;
 
-            var originalDamageAmount = data.totalDamageAmount;
+            var originalDamageAmount = originalDamageAmountOverride;
             var damageAmount = data.damageAmount;
+            var resistedDamage = Math.Max(0d, originalDamageAmount - damageAmount);
             var resistedPercent = originalDamageAmount > 0d
-                ? (damageAmount == originalDamageAmount ? 0d : 1d - (damageAmount / originalDamageAmount))
+                ? resistedDamage / originalDamageAmount
                 : 0d;
             var damageType = data.type;
             var sourceTurret = data.sourceTurret;
@@ -222,6 +255,8 @@ public static class DamageLoggingPatches
                     PlayerOutgoingDamageFirstSeenUtc = now;
                 }                
                 LastPlayerDamageDoneUtc = now;
+                var firstOutgoingDamageUtc = PlayerOutgoingDamageFirstSeenUtc ?? now;
+                var playerElapsedSeconds = Math.Max((now - firstOutgoingDamageUtc).TotalSeconds, 0.001d);
                 var playerTurretId = sourceTurret?.GetInstanceID();
                 var sourceId = data.source?.GetInstanceID();
                 var categoryState = default(DamageCategory);
@@ -237,12 +272,13 @@ public static class DamageLoggingPatches
                     torpedoState.BaseDamageType = damageType;
                     if (TorpedoPatches.TorpedoExplosionDamageMarkers.TryGetValue(data, out _))
                     {
-                        torpedoState.AddExtraDamage(damageType, damageAmount);
+                        torpedoState.AddExtraDamage(damageType, damageAmount, resistedDamage, critCount, playerElapsedSeconds);
                         WriteLog($"[{now:yyyy-MM-ddTHH:mm:ss.fffZ}] {sourceUnit?.displayName ?? "null"} Torpedo explosion dealt {damageAmount} [{resistedPercent:P} resisted] {damageType} damage to {targetUnit?.targetName ?? "null"} critCount: {critCount} (extra)");
                     }
                     else
                     {
                         torpedoState.BaseTotal += damageAmount;
+                        torpedoState.ResistedDamage += resistedDamage;
                         WriteLog($"[{now:yyyy-MM-ddTHH:mm:ss.fffZ}] {sourceUnit?.displayName ?? "null"} Torpedo direct hit dealt {damageAmount} [{resistedPercent:P} resisted] {damageType} damage to {targetUnit?.targetName ?? "null"} critCount: {critCount} (base)");
                     }
                     categoryState = torpedoState;
@@ -265,7 +301,7 @@ public static class DamageLoggingPatches
                             DamageByCategory[cannonTurretId.Value.ToString()] = turretState;
                         }
 
-                        turretState.AddExtraDamage(damageType, damageAmount);
+                        turretState.AddExtraDamage(damageType, damageAmount, resistedDamage, critCount, playerElapsedSeconds);
                         categoryState = turretState;
                     }
                     else
@@ -278,7 +314,7 @@ public static class DamageLoggingPatches
                         }
 
                         fallbackState.BaseDamageType = damageType;
-                        fallbackState.AddExtraDamage(damageType, damageAmount);
+                        fallbackState.AddExtraDamage(damageType, damageAmount, resistedDamage, critCount, playerElapsedSeconds);
                         categoryState = fallbackState;
                     }
 
@@ -294,6 +330,7 @@ public static class DamageLoggingPatches
                         DamageByCategory[reflectedDamageLabel] = reflectedState;
                     }
                     reflectedState.BaseTotal += damageAmount;
+                    reflectedState.ResistedDamage += resistedDamage;
                     categoryState = reflectedState;
                 }
                 else if (isDamageOverTime)
@@ -310,6 +347,7 @@ public static class DamageLoggingPatches
                         DamageByCategory[damageOverTimeLabel] = dotState;
                     }
                     dotState.BaseTotal += damageAmount;
+                    dotState.ResistedDamage += resistedDamage;
                     categoryState = dotState;
                 }
                 else if (isDrone)
@@ -324,6 +362,7 @@ public static class DamageLoggingPatches
                         DamageByCategory[droneLabel] = droneState;
                     }
                     droneState.BaseTotal += damageAmount;
+                    droneState.ResistedDamage += resistedDamage;
                     categoryState = droneState;
                 }
                 else if (playerTurretId.HasValue)
@@ -348,6 +387,7 @@ public static class DamageLoggingPatches
                     }
                     turretState.BaseDamageType = damageType;
                     turretState.BaseTotal += damageAmount;
+                    turretState.ResistedDamage += resistedDamage;
                     categoryState = turretState;
                 }
                 else if (sourceId.HasValue)
@@ -382,7 +422,7 @@ public static class DamageLoggingPatches
                         procState = new DamageCategory(label, damageType);
                         DamageByCategory[id.ToString()] = procState;
                     }
-                    procState.AddExtraDamage(damageType, damageAmount);
+                    procState.AddExtraDamage(damageType, damageAmount, resistedDamage, critCount, playerElapsedSeconds);
                     categoryState = procState;
                 }
                 else
@@ -394,13 +434,13 @@ public static class DamageLoggingPatches
                         DamageByCategory["Unknown source"] = fallbackState;
                     }
 
+                    fallbackState.BaseTotal += damageAmount;
+                    fallbackState.ResistedDamage += resistedDamage;
                     categoryState = fallbackState;
                 }
 
                 PlayerOutgoingTotalDamage += damageAmount;
 
-                var firstOutgoingDamageUtc = PlayerOutgoingDamageFirstSeenUtc ?? now;
-                var playerElapsedSeconds = Math.Max((now - firstOutgoingDamageUtc).TotalSeconds, 0.001d);
                 PlayerDamagePerSecondValue = (float)(PlayerOutgoingTotalDamage / playerElapsedSeconds);
 
                 categoryState.hitCount++;

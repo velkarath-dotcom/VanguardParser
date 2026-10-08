@@ -39,6 +39,8 @@ namespace VGParserMod
         private const string Grey = "#8080aa";
         private const string White = "#ffffff";
         private static GameObject? _root;
+        private static Texture2D? _solidTexture;
+        private static Sprite? _solidSprite;
         private static RectTransform? _rect;
         private static TMP_Text? _title;
         private static TMP_Text? _body;
@@ -78,6 +80,27 @@ namespace VGParserMod
         {
             _open = false;
             if (_root != null) _root.SetActive(false);
+        }
+
+        internal static void Dispose()
+        {
+            if (_root != null) UnityEngine.Object.Destroy(_root);
+            if (_solidSprite != null) UnityEngine.Object.Destroy(_solidSprite);
+            if (_solidTexture != null) UnityEngine.Object.Destroy(_solidTexture);
+
+            _root = null;
+            _solidSprite = null;
+            _solidTexture = null;
+            _rect = null;
+            _title = null;
+            _body = null;
+            _chartRoot = null;
+            _clearButton = null;
+            _chartToggleButton = null;
+            _chartToggleLabel = null;
+            _open = false;
+            AutoOpened = false;
+            DismissedByHand = false;
         }
 
         private static void ClearCurrentDamageStats()
@@ -272,7 +295,10 @@ namespace VGParserMod
                 var rowTooltip = row.AddComponent<TooltipSource>();
                 rowTooltip.Title = labelText;
                 var breakdown = new StringBuilder();
-                breakdown.AppendLine($"Total damage: {letterFormat((float)c.GetTotalDamage())}");
+                var totalDamageLine = $"Total damage: {letterFormat((float)c.GetTotalDamage())}";
+                var resistedPercentage = c.GetResistedDamagePercentage();
+                if (resistedPercentage > 0d) totalDamageLine += $" ({resistedPercentage:P1} resisted)";
+                breakdown.AppendLine(totalDamageLine);
                 breakdown.AppendLine($"DPS: {letterFormat((float)c.dps)}");
                 breakdown.AppendLine($"Base damage: {letterFormat((float)c.BaseTotal)}");
                 breakdown.AppendLine($"Hit count: {c.hitCount}");
@@ -281,13 +307,19 @@ namespace VGParserMod
                 breakdown.AppendLine($"Avg hit: {letterFormat((float)(c.hitCount > 0 ? c.BaseTotal / c.hitCount : 0d))}");
                 breakdown.AppendLine($"Min hit: {letterFormat((float)(c.hitCount > 0 ? c.minHit : 0d))}");
                 breakdown.AppendLine($"Max hit: {letterFormat((float)(c.hitCount > 0 ? c.maxHit : 0d))}");
-                if (c.ExtraHeat > 0d) breakdown.AppendLine($"Extra Heat: {letterFormat((float)c.ExtraHeat)}");
-                if (c.ExtraCold > 0d) breakdown.AppendLine($"Extra Cold: {letterFormat((float)c.ExtraCold)}");
-                if (c.ExtraEnergy > 0d) breakdown.AppendLine($"Extra Energy: {letterFormat((float)c.ExtraEnergy)}");
-                if (c.ExtraKinetic > 0d) breakdown.AppendLine($"Extra Kinetic: {letterFormat((float)c.ExtraKinetic)}");
-                if (c.ExtraRadiation > 0d) breakdown.AppendLine($"Extra Radiation: {letterFormat((float)c.ExtraRadiation)}");
-                if (c.ExtraCorrosion > 0d) breakdown.AppendLine($"Extra Corrosion: {letterFormat((float)c.ExtraCorrosion)}");
-                if (c.ExtraExplosive > 0d) breakdown.AppendLine($"Extra Explosive: {letterFormat((float)c.ExtraExplosive)}");
+                foreach (var extraDamage in c.ExtraDamage.Values)
+                {
+                    var extraDamageLine = $"{extraDamage.Name}: {letterFormat((float)extraDamage.GetTotalDamage())}";
+                    var extraResistedPercentage = extraDamage.GetResistedDamagePercentage();
+                    if (extraResistedPercentage > 0d) extraDamageLine += $" ({extraResistedPercentage:P1} resisted)";
+                    breakdown.AppendLine(extraDamageLine);
+                    breakdown.AppendLine($"  Hit count: {extraDamage.hitCount}");
+                    breakdown.AppendLine($"  Crit count: {extraDamage.CritCount}");
+                    breakdown.AppendLine($"  Crit percentage: {extraDamage.CritPercentage:P1}");
+                    breakdown.AppendLine($"  Avg hit: {letterFormat((float)(extraDamage.hitCount > 0 ? extraDamage.BaseTotal / extraDamage.hitCount : 0d))}");
+                    breakdown.AppendLine($"  Min hit: {letterFormat((float)extraDamage.minHit)}");
+                    breakdown.AppendLine($"  Max hit: {letterFormat((float)extraDamage.maxHit)}");
+                }
                 rowTooltip.BodyText = breakdown.ToString().TrimEnd();
 
                 var rowMask = row.AddComponent<RectMask2D>();
@@ -327,17 +359,9 @@ namespace VGParserMod
                 segmentRootRt.sizeDelta = new Vector2(barWidth, 18f);
                 segmentRootRt.SetAsFirstSibling();
 
-                var segmentDefs = new[]
-                {
-                    (Value: c.BaseTotal, Type: c.BaseDamageType),
-                    (Value: c.ExtraHeat, Type: DamageType.Heat),
-                    (Value: c.ExtraCold, Type: DamageType.Cold),
-                    (Value: c.ExtraEnergy, Type: DamageType.Energy),
-                    (Value: c.ExtraKinetic, Type: DamageType.Kinetic),
-                    (Value: c.ExtraRadiation, Type: DamageType.Radiation),
-                    (Value: c.ExtraCorrosion, Type: DamageType.Corrosion),
-                    (Value: c.ExtraExplosive, Type: DamageType.Explosive)
-                };
+                var segmentDefs = new[] { (Value: c.BaseTotal, Type: c.BaseDamageType) }
+                    .Concat(c.ExtraDamage.Values.Select(x => (Value: x.GetTotalDamage(), Type: x.BaseDamageType)))
+                    .ToArray();
 
                 var visibleSegments = segmentDefs.Where(x => x.Value > 0d).ToArray();
                 var segmentTotal = visibleSegments.Sum(x => x.Value);
@@ -598,7 +622,7 @@ namespace VGParserMod
             catch (Exception e)
             {
                Console.WriteLine($"panel could not be built: {e.Message}");
-                _root = null;
+                Dispose();
                 return false;
             }
         }
@@ -661,10 +685,13 @@ namespace VGParserMod
 
         private static Sprite CreateSolidSprite()
         {
-            var texture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
-            texture.SetPixel(0, 0, Color.white);
-            texture.Apply();
-            return Sprite.Create(texture, new Rect(0f, 0f, 1f, 1f), new Vector2(0.5f, 0.5f), 1f);
+            if (_solidSprite != null) return _solidSprite;
+
+            _solidTexture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+            _solidTexture.SetPixel(0, 0, Color.white);
+            _solidTexture.Apply();
+            _solidSprite = Sprite.Create(_solidTexture, new Rect(0f, 0f, 1f, 1f), new Vector2(0.5f, 0.5f), 1f);
+            return _solidSprite;
         }
 
         //---- position, remembered ----------------------------------------------------------------------

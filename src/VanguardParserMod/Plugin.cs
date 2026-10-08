@@ -82,6 +82,7 @@ public class Plugin : BaseUnityPlugin
 
     private void OnDestroy()
     {
+        Panel.Dispose();
         _harmony?.UnpatchSelf();
     }
 }
