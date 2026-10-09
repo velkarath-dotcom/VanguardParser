@@ -24,6 +24,7 @@ public class Plugin : BaseUnityPlugin
     internal static ConfigEntry<bool> WriteLogSetting { get; private set; } = null!;
     internal static ConfigEntry<string> LogFileNameSetting { get; private set; } = null!;
     internal static ConfigEntry<string> PanelPositionSetting { get; private set; } = null!;
+    internal static ConfigEntry<float> PanelWidthSetting { get; private set; } = null!;
 
     private Harmony _harmony = null!;
 
@@ -34,6 +35,7 @@ public class Plugin : BaseUnityPlugin
         WriteLogSetting = Config.Bind("Logging", "writeLog", false, "If true, damage logs are written to disk.");
         LogFileNameSetting = Config.Bind("Logging", "logFileName", "combatlog.txt", "Filename used for the damage log when file logging is enabled.");
         PanelPositionSetting = Config.Bind("Panel", "panelPosition", "24,-120", "Saved panel position as x,y anchored coordinates.");
+        PanelWidthSetting = Config.Bind("Panel", "panelWidth", 1000f, "Saved panel width in pixels.");
 
         _harmony = new Harmony(PluginGuid);
         DamageLoggingPatches.Register(_harmony);

@@ -25,8 +25,14 @@ namespace VGParserMod
     // breaking"). The font still comes from the game, cloned off a live label, so the panel reads as part of it.
     internal static class Panel
     {
-        private const float Width = 1000f;
+        private const float DefaultWidth = 1000f;
+        private const float MinWidth = 500f;
+        private const float MaxWidth = 1800f;
         private const float Pad = 10f;
+        private static float _width = DefaultWidth;
+        private static float? _lastDps;
+        private static double? _lastDamage;
+        private static Dictionary<string, DamageCategory>? _lastCategories;
 
         // ONE palette, named, rather than hex at each call site. GOLD is a capture and it is the game's own
         // Legendary tone, so it reads as the game's idea of "rare"; RED is a threat, GREEN a neighbour.
@@ -210,12 +216,16 @@ namespace VGParserMod
             var rect = _rect;
             if (!IsOpen || body == null || title == null || rect == null || categories == null) return;
 
+            _lastDps = dps;
+            _lastDamage = damage;
+            _lastCategories = categories;
+
             title.ForceMeshUpdate();
             var head = Mathf.Max(22f, title.preferredHeight);
             if (_chartRoot == null || !_chartRoot.activeSelf)
             {
                 body.text = "";
-                rect.sizeDelta = new Vector2(Width, head + Pad * 2 + 8f);
+                rect.sizeDelta = new Vector2(_width, head + Pad * 2 + 8f);
                 return;
             }
 
@@ -266,13 +276,13 @@ namespace VGParserMod
             if (categories.Values.Count == 0)
             {
                 body.text = "";
-                rect.sizeDelta = new Vector2(Width, head + Pad * 2 + 8f);
+                rect.sizeDelta = new Vector2(_width, head + Pad * 2 + 8f);
                 return;
             }
 
             var maxCategoryTotal = categories.Values.Max(x => x.GetTotalDamage());
             var rowIndex = 0;
-            var chartWidth = Width;
+            var chartWidth = _width;
             var chartHeight = 0f;
 
             foreach (var c in categories.Values.OrderByDescending(x => x.GetTotalDamage()))
@@ -462,7 +472,40 @@ namespace VGParserMod
 
             // The panel is as tall as what it holds. A fixed height either clips the list or leaves a hole.
             var height = Mathf.Clamp(body.preferredHeight + head + 22f, 70f, 620f);
-            rect.sizeDelta = new Vector2(Width, height);
+            rect.sizeDelta = new Vector2(_width, height);
+        }
+
+        internal static void ResizeWidth(float delta)
+        {
+            var nextWidth = Mathf.Clamp(_width + delta, MinWidth, MaxWidth);
+            if (Mathf.Abs(nextWidth - _width) < 0.5f) return;
+
+            _width = nextWidth;
+            var title = _title;
+            var body = _body;
+            var chart = _chartRoot?.GetComponent<RectTransform>();
+            if (_rect != null)
+            {
+                _rect.sizeDelta = new Vector2(_width, _rect.sizeDelta.y);
+            }
+            if (title != null)
+            {
+                title.rectTransform.sizeDelta = new Vector2(_width - Pad * 2, title.rectTransform.sizeDelta.y);
+            }
+            if (body != null)
+            {
+                body.rectTransform.sizeDelta = new Vector2(_width - Pad * 2, body.rectTransform.sizeDelta.y);
+            }
+            if (chart != null)
+            {
+                chart.sizeDelta = new Vector2(_width, chart.sizeDelta.y);
+            }
+
+            if (_lastCategories != null)
+            {
+                Refresh(_lastDps, _lastDamage, _lastCategories);
+            }
+            SaveWidth();
         }
 
         private static Vector2? PlayerPosition()
@@ -511,7 +554,8 @@ namespace VGParserMod
                 _rect = window.AddComponent<RectTransform>();
                 _rect.anchorMin = _rect.anchorMax = new Vector2(0f, 1f);   // top-left, so saved positions are stable
                 _rect.pivot = new Vector2(0f, 1f);
-                _rect.sizeDelta = new Vector2(Width, 120f);
+                _width = LoadWidth();
+                _rect.sizeDelta = new Vector2(_width, 120f);
                 _rect.anchoredPosition = LoadPosition();
 
                 var bg = window.AddComponent<Image>();
@@ -519,8 +563,21 @@ namespace VGParserMod
                 bg.raycastTarget = true;                                    // the whole window is the drag handle
                 window.AddComponent<Dragger>().Target = _rect;
 
-                _title = Clone(template, window.transform, new Vector2(Pad, -Pad), Width - Pad * 2, 22f);
-                _body = Clone(template, window.transform, new Vector2(Pad, -Pad - 24f), Width - Pad * 2, 0f);
+                var resizeHandle = new GameObject("ResizeHandle");
+                resizeHandle.transform.SetParent(window.transform, false);
+                var resizeRt = resizeHandle.AddComponent<RectTransform>();
+                resizeRt.anchorMin = new Vector2(1f, 0f);
+                resizeRt.anchorMax = new Vector2(1f, 1f);
+                resizeRt.pivot = new Vector2(0f, 0.5f);
+                resizeRt.anchoredPosition = new Vector2(4f, 0f);
+                resizeRt.sizeDelta = new Vector2(8f, 0f);
+                var resizeImage = resizeHandle.AddComponent<Image>();
+                resizeImage.color = new Color(0.45f, 0.5f, 0.58f, 0.75f);
+                resizeImage.raycastTarget = true;
+                resizeHandle.AddComponent<Resizer>().Target = _rect;
+
+                _title = Clone(template, window.transform, new Vector2(Pad, -Pad), _width - Pad * 2, 22f);
+                _body = Clone(template, window.transform, new Vector2(Pad, -Pad - 24f), _width - Pad * 2, 0f);
                 _body.textWrappingMode = TextWrappingModes.NoWrap;
 
                 var toggleGo = new GameObject("ChartToggleButton");
@@ -610,7 +667,7 @@ namespace VGParserMod
                 chartRt.anchorMax = new Vector2(1f, 1f);
                 chartRt.pivot = new Vector2(0f, 1f);
                 chartRt.anchoredPosition = new Vector2(0f, -Pad - 26f);
-                chartRt.sizeDelta = new Vector2(Width, 0f);
+                chartRt.sizeDelta = new Vector2(_width, 0f);
                 var chartMask = _chartRoot.AddComponent<RectMask2D>();
                 chartMask.padding = Vector4.zero;
                 chartMask.softness = Vector2Int.zero;
@@ -694,7 +751,18 @@ namespace VGParserMod
             return _solidSprite;
         }
 
-        //---- position, remembered ----------------------------------------------------------------------
+        //---- position and width, remembered ----------------------------------------------------------------------
+
+        private static float LoadWidth()
+        {
+            try
+            {
+                var width = Plugin.PanelWidthSetting.Value;
+                return Mathf.Clamp(width, MinWidth, MaxWidth);
+            }
+            catch { }
+            return DefaultWidth;
+        }
 
         private static Vector2 LoadPosition()
         {
@@ -711,6 +779,16 @@ namespace VGParserMod
             }
             catch { }
             return new Vector2(24f, -120f);
+        }
+
+        internal static void SaveWidth()
+        {
+            try
+            {
+                if (Plugin.PanelWidthSetting == null) return;
+                Plugin.PanelWidthSetting.Value = _width;
+            }
+            catch { }
         }
 
         internal static void SavePosition()
@@ -745,6 +823,24 @@ namespace VGParserMod
         public void OnEndDrag(PointerEventData e)
         {
             Panel.SavePosition();
+        }
+    }
+
+    internal sealed class Resizer : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler
+    {
+        internal RectTransform? Target;
+
+        public void OnBeginDrag(PointerEventData e) { }
+
+        public void OnDrag(PointerEventData e)
+        {
+            if (Target == null) return;
+            Panel.ResizeWidth(e.delta.x);
+        }
+
+        public void OnEndDrag(PointerEventData e)
+        {
+            Panel.SaveWidth();
         }
     }
 }
