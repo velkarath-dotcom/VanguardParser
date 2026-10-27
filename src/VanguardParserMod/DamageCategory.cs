@@ -71,3 +71,79 @@
             extraDamage.dps = extraDamage.GetTotalDamage() / Math.Max(elapsedSeconds, 0.001d);
         }
     }
+
+    public class ShipDamageCategory
+    {
+        private double damageForDps;
+        private DateTime? firstDamageUtc;
+
+        public String ShipName { get; set; }
+        public int Id { get; set; }
+        public String Name => ShipName;
+        public double Dps { get; private set; }
+        public List<DamageCategory> DamageCategories { get; }
+
+        public ShipDamageCategory(String shipName)
+            : this(shipName, 0)
+        {
+        }
+
+        public ShipDamageCategory(String shipName, int id)
+        {
+            ShipName = shipName;
+            Id = id;
+            DamageCategories = new List<DamageCategory>();
+        }
+
+        public ShipDamageCategory(String shipName, IEnumerable<DamageCategory> damageCategories)
+            : this(shipName, 0, damageCategories)
+        {
+        }
+
+        public ShipDamageCategory(String shipName, int id, IEnumerable<DamageCategory> damageCategories)
+        {
+            ShipName = shipName;
+            Id = id;
+            DamageCategories = new List<DamageCategory>(damageCategories ?? Enumerable.Empty<DamageCategory>());
+        }
+
+        public void AddDamageCategory(DamageCategory category)
+        {
+            if (category == null)
+            {
+                throw new ArgumentNullException(nameof(category));
+            }
+
+            DamageCategories.Add(category);
+        }
+
+        public void RecordDamage(double damage, DateTime timestampUtc)
+        {
+            damageForDps += damage;
+            firstDamageUtc ??= timestampUtc;
+            var elapsedSeconds = Math.Max((timestampUtc - firstDamageUtc.Value).TotalSeconds, 0.001d);
+            Dps = damageForDps / elapsedSeconds;
+        }
+
+        public double GetTotalDamage()
+        {
+            double total = 0d;
+            foreach (var category in DamageCategories)
+            {
+                total += category.GetTotalDamage();
+            }
+
+            return total;
+        }
+
+        public double GetTotalResistedDamage()
+        {
+            double total = 0d;
+            foreach (var category in DamageCategories)
+            {
+                total += category.GetTotalResistedDamage();
+            }
+
+            return total;
+        }
+    }

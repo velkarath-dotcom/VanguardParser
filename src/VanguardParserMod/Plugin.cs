@@ -78,8 +78,18 @@ public class Plugin : BaseUnityPlugin
         _lastPanelDraw = Time.realtimeSinceStartup;
         var dps = DamageLoggingPatches.GetPlayerDps();
         var damage = DamageLoggingPatches.GetPlayerOutgoingTotalDamage();
-        var categories = DamageLoggingPatches.GetDamageByCategory();
-        if (Panel.IsOpen) Panel.Refresh(dps, damage, categories);
+        var fleetShipCategories = DamageLoggingPatches.GetFleetShipCategories();
+        if (Panel.IsOpen)
+        {
+            if (DamageLoggingPatches.HasFleetShips())
+            {
+                Panel.Refresh(dps, damage, fleetShipCategories);
+            }
+            else
+            {
+                Panel.Refresh(dps, damage, DamageLoggingPatches.GetDamageByCategory());
+            }
+        }
     }
 
     private void OnDestroy()

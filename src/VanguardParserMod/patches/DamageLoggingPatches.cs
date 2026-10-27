@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using Behaviour.Equipment.Turret;
 using Behaviour.Weapons;
 using Behaviour.Unit;
 using HarmonyLib;
+using Source.Combat;
 using UnityEngine;
 using VGParserMod;
 
@@ -15,6 +17,9 @@ public static class DamageLoggingPatches
 {
     private const string UiInfoTextParentTypeName = "Behaviour.UI.UIInfoTextParent, Assembly-CSharp";
     private static readonly Dictionary<string, DamageCategory> DamageByCategory = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<int, ShipDamageCategory> PlayerShipCategories = new();
+    private static readonly Dictionary<int, ShipDamageCategory> FleetShipCategories = new();
+    private static ShipDamageCategory? CurrentPlayerShipCategory;
     private static readonly ConditionalWeakTable<DamageData, OriginalDamageSnapshot> OriginalDamageAmounts = new();
 
     private sealed class OriginalDamageSnapshot
@@ -36,8 +41,31 @@ public static class DamageLoggingPatches
     private static DateTime? LastPlayerDamageTakenUtc = null;
     private static float PlayerDamagePerSecondValue = 0f;
 
-    public static  Dictionary<string, DamageCategory> GetDamageByCategory()
+    public static Dictionary<string, DamageCategory> GetDamageByCategory()
     {
+        if (HasFleetShips())
+        {
+            var groupedByShip = new Dictionary<string, DamageCategory>(StringComparer.OrdinalIgnoreCase);
+            foreach (var shipCategory in GetFleetShipCategories())
+            {
+                var shipTotal = new DamageCategory(shipCategory.ShipName, shipCategory.DamageCategories.FirstOrDefault()?.BaseDamageType ?? DamageType.Kinetic);
+                foreach (var category in shipCategory.DamageCategories)
+                {
+                    shipTotal.BaseTotal += category.GetTotalDamage();
+                    shipTotal.ResistedDamage += category.GetTotalResistedDamage();
+                    shipTotal.hitCount += category.hitCount;
+                    shipTotal.CritCount += category.CritCount;
+                    shipTotal.maxHit = Math.Max(shipTotal.maxHit, category.maxHit);
+                    shipTotal.minHit = shipTotal.minHit == 0d ? category.minHit : Math.Min(shipTotal.minHit, category.minHit);
+                }
+
+                shipTotal.dps = shipCategory.Dps;
+                groupedByShip[shipCategory.Id.ToString()] = shipTotal;
+            }
+
+            return groupedByShip;
+        }
+
         return DamageByCategory;
     }
     public static float GetPlayerDps()
@@ -45,10 +73,92 @@ public static class DamageLoggingPatches
         return PlayerDamagePerSecondValue;
     }
 
+    public static ShipDamageCategory? GetCurrentPlayerShipCategory()
+    {
+        return CurrentPlayerShipCategory;
+    }
+
+    public static ShipDamageCategory[] GetFleetShipCategories()
+    {
+        var categories = new List<ShipDamageCategory>();
+        var flagship = GameplayManager.Instance?.spaceShip;
+        if (flagship != null && PlayerShipCategories.TryGetValue(flagship.GetInstanceID(), out var flagshipCategory))
+        {
+            categories.Add(flagshipCategory);
+        }
+
+        categories.AddRange(FleetShipCategories.Values);
+        return categories.ToArray();
+    }
+
+    public static bool HasFleetShips()
+    {
+        return GameplayManager.Instance != null && GameplayManager.Instance.fleetSpaceShips.Count > 0;
+    }
+
     public static double GetPlayerOutgoingTotalDamage()
     {
         return PlayerOutgoingTotalDamage;
     }
+
+    private static ShipDamageCategory? GetOrCreatePlayerShipCategory(AbstractUnit? sourceUnit)
+    {
+        var shipId = sourceUnit != null ? sourceUnit.GetInstanceID() : 0;
+        var shipName = sourceUnit?.displayName ?? "Player ship";
+
+        if (!PlayerShipCategories.TryGetValue(shipId, out var shipCategory))
+        {
+            shipCategory = new ShipDamageCategory(shipName, shipId);
+            PlayerShipCategories[shipId] = shipCategory;
+        }
+        else if (!string.IsNullOrWhiteSpace(shipName) && !string.Equals(shipCategory.ShipName, shipName, StringComparison.OrdinalIgnoreCase))
+        {
+            shipCategory.ShipName = shipName;
+        }
+
+        CurrentPlayerShipCategory = shipCategory;
+        return shipCategory;
+    }
+
+    private static ShipDamageCategory? GetOrCreateFleetShipCategory(AbstractUnit? sourceUnit)
+    {
+        if (sourceUnit == null)
+        {
+            return null;
+        }
+
+        var ship = sourceUnit as SpaceShip;
+        if (ship == null)
+        {
+            return null;
+        }
+
+        if (GameplayManager.Instance == null || !GameplayManager.Instance.IsFleetShip(ship))
+        {
+            return null;
+        }
+
+        var shipId = ship.GetInstanceID();
+        if (!FleetShipCategories.TryGetValue(shipId, out var shipCategory))
+        {
+            shipCategory = new ShipDamageCategory(sourceUnit.displayName, shipId);
+            FleetShipCategories[shipId] = shipCategory;
+        }
+        else if (!string.IsNullOrWhiteSpace(ship.displayName) && !string.Equals(shipCategory.ShipName, ship.displayName, StringComparison.OrdinalIgnoreCase))
+        {
+            shipCategory.ShipName = ship.displayName;
+        }
+
+        return shipCategory;
+    }
+
+    private static bool IsFleetShipSource(AbstractUnit? sourceUnit)
+    {
+        return sourceUnit is SpaceShip ship
+            && GameplayManager.Instance != null
+            && GameplayManager.Instance.IsFleetShip(ship);
+    }
+
     public static float UpdatePlayerDps()
     {
         var now = DateTime.UtcNow;
@@ -89,6 +199,9 @@ public static class DamageLoggingPatches
     public static void ClearCurrentDamage()
     {
         DamageByCategory.Clear();
+        PlayerShipCategories.Clear();
+        FleetShipCategories.Clear();
+        CurrentPlayerShipCategory = null;
         PlayerOutgoingTotalDamage = 0d;
         PlayerOutgoingDamageFirstSeenUtc = null;
         PlayerDamagePerSecondValue = 0f;
@@ -139,13 +252,33 @@ public static class DamageLoggingPatches
 
     private static void CaptureOriginalDamagePrefix(DamageData damageData)
     {
-        if (damageData == null)
+        try
         {
-            return;
-        }
+            if (damageData == null)
+            {
+                return;
+            }
 
-        OriginalDamageAmounts.Remove(damageData);
-        OriginalDamageAmounts.Add(damageData, new OriginalDamageSnapshot(damageData.totalDamageAmount));
+            OriginalDamageAmounts.Remove(damageData);
+            OriginalDamageAmounts.Add(damageData, new OriginalDamageSnapshot(damageData.totalDamageAmount));
+        }
+        catch (Exception ex)
+        {
+            LogPatchFailure(nameof(CaptureOriginalDamagePrefix), ex);
+        }
+    }
+
+    private static void LogPatchFailure(string patchName, Exception exception)
+    {
+        try
+        {
+            var message = $"[VGParserMod] {patchName} failed; allowing the game method to continue: {exception}";
+            Console.WriteLine(message);
+            WriteLog(message);
+        }
+        catch
+        {
+        }
     }
 
     private static bool HasParentComponent<T>(object? source) where T : Component
@@ -187,30 +320,37 @@ public static class DamageLoggingPatches
 
     private static void LogDamageNumberPrefix(MethodBase __originalMethod, object[] __args)
     {
-        if (__args == null || __args.Length == 0)
+        try
         {
-            return;
-        }
-
-        DamageData? damageData = null;
-        foreach (var arg in __args)
-        {
-            if (arg is DamageData candidate)
+            if (__args == null || __args.Length == 0)
             {
-                damageData = candidate;
-                break;
+                return;
             }
-        }
 
-        if (damageData == null || damageData.totalDamageAmount <= 0d)
+            DamageData? damageData = null;
+            foreach (var arg in __args)
+            {
+                if (arg is DamageData candidate)
+                {
+                    damageData = candidate;
+                    break;
+                }
+            }
+
+            if (damageData == null || damageData.totalDamageAmount <= 0d)
+            {
+                return;
+            }
+
+            var originalDamageAmount = OriginalDamageAmounts.TryGetValue(damageData, out var snapshot)
+                ? snapshot.Amount
+                : damageData.totalDamageAmount;
+            ProcessDamageLog(damageData, damageData.targetUnit as AbstractUnit, originalDamageAmount);
+        }
+        catch (Exception ex)
         {
-            return;
+            LogPatchFailure(nameof(LogDamageNumberPrefix), ex);
         }
-
-        var originalDamageAmount = OriginalDamageAmounts.TryGetValue(damageData, out var snapshot)
-            ? snapshot.Amount
-            : damageData.totalDamageAmount;
-        ProcessDamageLog(damageData, damageData.targetUnit as AbstractUnit, originalDamageAmount);
     }
 
     private static bool IsTorpedoDamage(DamageData data)
@@ -221,6 +361,68 @@ public static class DamageLoggingPatches
     private static bool IsCannonExplosionDamage(DamageData data)
     {
         return CannonPatches.IsCannonExplosionDamage(data);
+    }
+
+    private static string GetTurretDisplayName(AbstractTurret? turret)
+    {
+        if (turret == null)
+        {
+            return "unknown turret";
+        }
+
+        try
+        {
+            var itemProperty = turret.GetType().GetProperty("item", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var item = itemProperty?.GetValue(turret);
+            var displayNameProperty = item?.GetType().GetProperty("displayName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (displayNameProperty?.GetValue(item) is string displayName && !string.IsNullOrWhiteSpace(displayName))
+            {
+                return displayName;
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            var equipmentName = turret.GetName();
+            if (!string.IsNullOrWhiteSpace(equipmentName))
+            {
+                return equipmentName;
+            }
+        }
+        catch
+        {
+        }
+
+        return string.IsNullOrWhiteSpace(turret.name) ? "unknown turret" : turret.name;
+    }
+
+    private static void RecordDroneDamageForShip(
+        ShipDamageCategory shipCategory,
+        DamageType damageType,
+        double damage,
+        double resistedDamage,
+        int critCount,
+        double elapsedSeconds)
+    {
+        var name = $"{damageType} drone";
+        var droneCategory = shipCategory.DamageCategories.FirstOrDefault(category =>
+            string.Equals(category.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (droneCategory == null)
+        {
+            droneCategory = new DamageCategory(name, damageType);
+            shipCategory.DamageCategories.Add(droneCategory);
+        }
+
+        droneCategory.BaseTotal += damage;
+        droneCategory.ResistedDamage += resistedDamage;
+        droneCategory.hitCount++;
+        droneCategory.CritCount += critCount;
+        droneCategory.maxHit = Math.Max(droneCategory.maxHit, damage);
+        droneCategory.minHit = droneCategory.minHit == 0d ? damage : Math.Min(droneCategory.minHit, damage);
+        droneCategory.dps = droneCategory.GetTotalDamage() / Math.Max(elapsedSeconds, 0.001d);
     }
 
     private static void ProcessDamageLog(DamageData data, AbstractUnit? targetUnitOverride, float originalDamageAmountOverride)
@@ -238,6 +440,10 @@ public static class DamageLoggingPatches
             var damageType = data.type;
             var sourceTurret = data.sourceTurret;
             var sourceUnit = data.sourceUnit;
+            var droneSourceUnit = sourceUnit as Drone
+                ?? data.source?.GetComponentInParent<Drone>()
+                ?? sourceTurret?.GetComponentInParent<Drone>();
+            var shipSourceUnit = droneSourceUnit?.droneCommander ?? sourceUnit;
             var targetUnit = targetUnitOverride ?? data.targetUnit as AbstractUnit;
             var critCount = data.critCount;
             var isReflectedDamage = data.reflectedDamage;
@@ -246,7 +452,9 @@ public static class DamageLoggingPatches
             var isDrone = sourceUnit is Drone || HasParentComponent<Drone>(data.source) || HasParentComponent<Drone>(sourceTurret);
             var isTorpedoDamage = IsTorpedoDamage(data);
             var isCannonExplosionDamage = IsCannonExplosionDamage(data);
-            var fromPlayer = sourceUnit != null && sourceUnit.IsPlayer();
+            var fromPlayer = (sourceUnit != null && sourceUnit.IsPlayer())
+                || (shipSourceUnit != null && shipSourceUnit.IsPlayer())
+                || IsFleetShipSource(shipSourceUnit);
             var toPlayer = targetUnit != null && targetUnit.IsPlayer();
             if (fromPlayer)
             {
@@ -286,8 +494,8 @@ public static class DamageLoggingPatches
                 else if (isCannonExplosionDamage)
                 {
                     var cannonExplosionSourceTurret = data.sourceTurret ?? CannonPatches.TryGetAssociatedTurret(data);
-                    var cannonTurretId = cannonExplosionSourceTurret?.item?.GetInstanceID() ?? cannonExplosionSourceTurret?.GetInstanceID();
-                    var label = cannonExplosionSourceTurret?.item?.displayName ?? cannonExplosionSourceTurret?.name ?? "unknown turret";
+                    var cannonTurretId = cannonExplosionSourceTurret?.GetInstanceID();
+                    var label = GetTurretDisplayName(cannonExplosionSourceTurret);
                     if (isFighter)
                     {
                         label = $"{sourceUnit?.displayName ?? "null"} - {label}";
@@ -367,7 +575,7 @@ public static class DamageLoggingPatches
                 }
                 else if (playerTurretId.HasValue)
                 {
-                    var label = sourceTurret?.item?.displayName ?? sourceTurret?.name ?? "unknown turret";
+                    var label = GetTurretDisplayName(sourceTurret);
                     if (isFighter)
                     {
                         label = $"{sourceUnit?.displayName ?? "null"} - {label}";
@@ -376,7 +584,7 @@ public static class DamageLoggingPatches
                     {
                         label = $"{label} [Torpedo]";
                     }
-                    var id = sourceTurret?.item?.GetInstanceID() ?? data.sourceTurret?.GetInstanceID();
+                    var id = sourceTurret?.GetInstanceID() ?? data.sourceTurret?.GetInstanceID();
                     var timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
                     WriteLog($"[{timestamp}] {sourceUnit?.displayName ?? "null"} {label} [{id}] dealt {damageAmount}/{originalDamageAmount} [{resistedPercent:P} resisted] {damageType} damage to {targetUnit?.targetName ?? "null"} critCount: {critCount}");
 
@@ -400,12 +608,12 @@ public static class DamageLoggingPatches
                         : null;
                     var resolvedTurret = data.sourceTurret ?? sourceTurretFromGameObject;
                     var name = resolvedTurret != null
-                        ? (resolvedTurret.item?.displayName ?? resolvedTurret.name)
+                        ? GetTurretDisplayName(resolvedTurret)
                         : sourceUnitFromGameObject != null
                             ? sourceUnitFromGameObject.displayName
                             : data.source?.name ?? "unknown source";
                     var id = resolvedTurret != null
-                        ? resolvedTurret.item?.GetInstanceID()
+                        ? resolvedTurret.GetInstanceID()
                         : data.source?.GetInstanceID();
                     var label = $"{name}";
                     if (isFighter)
@@ -448,6 +656,22 @@ public static class DamageLoggingPatches
                 categoryState.maxHit = Math.Max(categoryState.maxHit, damageAmount);
                 categoryState.minHit = (categoryState.minHit == 0d) ? damageAmount : Math.Min(categoryState.minHit, damageAmount);
                 categoryState.dps = categoryState.GetTotalDamage() / playerElapsedSeconds;
+
+                var fleetShipCategory = GetOrCreateFleetShipCategory(shipSourceUnit);
+                var shipCategory = fleetShipCategory ?? GetOrCreatePlayerShipCategory(shipSourceUnit);
+                if (shipCategory != null)
+                {
+                    shipCategory.RecordDamage(damageAmount, now);
+                    if (isDrone)
+                    {
+                        RecordDroneDamageForShip(shipCategory, damageType, damageAmount, resistedDamage, critCount, playerElapsedSeconds);
+                    }
+                    else if (!shipCategory.DamageCategories.Any(existingCategory => ReferenceEquals(existingCategory, categoryState)))
+                    {
+                        shipCategory.DamageCategories.Add(categoryState);
+                    }
+                }
+
                 TorpedoPatches.CleanupTorpedoMarkers(data);
             }
             else if (toPlayer)

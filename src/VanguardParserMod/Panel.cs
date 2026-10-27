@@ -33,6 +33,9 @@ namespace VGParserMod
         private static float? _lastDps;
         private static double? _lastDamage;
         private static Dictionary<string, DamageCategory>? _lastCategories;
+        private static ShipDamageCategory[]? _lastFleetShipCategories;
+        private static int? _expandedFleetShipId;
+        private static string? _expandedFleetShipName;
 
         // ONE palette, named, rather than hex at each call site. GOLD is a capture and it is the game's own
         // Legendary tone, so it reads as the game's idea of "rare"; RED is a threat, GREEN a neighbour.
@@ -104,6 +107,9 @@ namespace VGParserMod
             _clearButton = null;
             _chartToggleButton = null;
             _chartToggleLabel = null;
+            _lastFleetShipCategories = null;
+            _expandedFleetShipId = null;
+            _expandedFleetShipName = null;
             _open = false;
             AutoOpened = false;
             DismissedByHand = false;
@@ -162,7 +168,8 @@ namespace VGParserMod
         // which the wave call reads too, so the flash and the line it replaces cannot state different numbers.
         private static string Header(float dps, double damage)
         {
-            return $"<b>DPS</b>  <color={Gold}>{letterFormat(dps)}</color> | <b>Total Damage</b>  <color={Gold}>{letterFormat((float)damage)}</color>";
+            var dpsLabel = DamageLoggingPatches.HasFleetShips() ? "Fleet DPS" : "DPS";
+            return $"<b>{dpsLabel}</b>  <color={Gold}>{letterFormat(dps)}</color> | <b>Total Damage</b>  <color={Gold}>{letterFormat((float)damage)}</color>";
         }
 
         private static string letterFormat(float number)
@@ -190,7 +197,16 @@ namespace VGParserMod
             return $"{number:F0}";
         }
         /// <summary>Redraw, scanning for itself. For a settings change, where no tick is in hand.</summary>
-        internal static void Refresh() { Refresh(0f, 0d, null); }
+        internal static void Refresh()
+        {
+            if (_lastFleetShipCategories != null && DamageLoggingPatches.HasFleetShips())
+            {
+                Refresh(_lastDps, _lastDamage, _lastFleetShipCategories);
+                return;
+            }
+
+            Refresh(0f, 0d, (Dictionary<string, DamageCategory>?)null);
+        }
 
         /// <summary>
         /// RAISE the panel, without stealing focus. Named `Raise` rather than `Show` because `Show` is what a
@@ -206,10 +222,145 @@ namespace VGParserMod
             Refresh();
         }
 
+        internal static void Refresh(float? dps, double? damage, IEnumerable<ShipDamageCategory>? shipCategories)
+        {
+            if (shipCategories != null)
+            {
+                _lastFleetShipCategories = shipCategories.ToArray();
+            }
+
+            var fleetShipCategories = _lastFleetShipCategories ?? Array.Empty<ShipDamageCategory>();
+            var selectedShip = _expandedFleetShipId.HasValue
+                ? fleetShipCategories.FirstOrDefault(ship => ship.Id == _expandedFleetShipId.Value)
+                : null;
+            if (_expandedFleetShipId.HasValue && selectedShip == null)
+            {
+                _expandedFleetShipId = null;
+                _expandedFleetShipName = null;
+            }
+
+            Dictionary<string, DamageCategory> categories;
+            if (selectedShip != null)
+            {
+                categories = selectedShip.DamageCategories
+                    .GroupBy(category => category.Name, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.First())
+                    .ToDictionary(category => category.Name, category => category, StringComparer.OrdinalIgnoreCase);
+                _expandedFleetShipName = selectedShip.ShipName;
+            }
+            else
+            {
+                categories = fleetShipCategories.ToDictionary(
+                    ship => ship.Id.ToString(),
+                    SummarizeShipDamage,
+                    StringComparer.OrdinalIgnoreCase);
+                _expandedFleetShipName = null;
+            }
+
+            RefreshCategories(dps, damage, categories, true, selectedShip?.Id, _expandedFleetShipName);
+        }
+
+        private static DamageCategory SummarizeShipDamage(ShipDamageCategory shipCategory)
+        {
+            var total = new DamageCategory(
+                shipCategory.ShipName,
+                shipCategory.DamageCategories.FirstOrDefault()?.BaseDamageType ?? DamageType.Kinetic);
+            foreach (var category in shipCategory.DamageCategories)
+            {
+                total.BaseTotal += category.GetTotalDamage();
+                total.ResistedDamage += category.GetTotalResistedDamage();
+                total.hitCount += category.hitCount;
+                total.CritCount += category.CritCount;
+                total.maxHit = Math.Max(total.maxHit, category.maxHit);
+                total.minHit = total.minHit == 0d ? category.minHit : Math.Min(total.minHit, category.minHit);
+            }
+
+            total.dps = shipCategory.Dps;
+            return total;
+        }
+
+        private static void ExpandFleetShip(int shipId)
+        {
+            _expandedFleetShipId = shipId;
+            Refresh(_lastDps, _lastDamage, _lastFleetShipCategories);
+        }
+
+        private static void CollapseFleetShip()
+        {
+            _expandedFleetShipId = null;
+            Refresh(_lastDps, _lastDamage, _lastFleetShipCategories);
+        }
+
+        private static void AddFleetNavigationButton(Transform parent, string icon, string tooltipText, Action onClick)
+        {
+            var buttonObject = new GameObject("FleetNavigationButton");
+            buttonObject.transform.SetParent(parent, false);
+            var buttonRect = buttonObject.AddComponent<RectTransform>();
+            buttonRect.anchorMin = new Vector2(0f, 0.5f);
+            buttonRect.anchorMax = new Vector2(0f, 0.5f);
+            buttonRect.pivot = new Vector2(0f, 0.5f);
+            buttonRect.anchoredPosition = new Vector2(4f, 0f);
+            buttonRect.sizeDelta = new Vector2(20f, 18f);
+
+            var background = buttonObject.AddComponent<Image>();
+            background.sprite = CreateSolidSprite();
+            background.color = new Color(0.18f, 0.19f, 0.22f, 0.95f);
+
+            var button = buttonObject.AddComponent<Button>();
+            button.targetGraphic = background;
+            button.transition = Selectable.Transition.ColorTint;
+            button.colors = new ColorBlock
+            {
+                normalColor = new Color(0.18f, 0.19f, 0.22f, 0.95f),
+                highlightedColor = new Color(0.28f, 0.30f, 0.35f, 1f),
+                pressedColor = new Color(0.12f, 0.13f, 0.16f, 1f),
+                selectedColor = new Color(0.18f, 0.19f, 0.22f, 0.95f),
+                disabledColor = new Color(0.18f, 0.19f, 0.22f, 0.5f),
+                colorMultiplier = 1f,
+                fadeDuration = 0.05f
+            };
+            button.onClick.AddListener(() => onClick());
+
+            var iconLabel = CreateText(buttonObject.transform, icon, Vector2.zero, TextAlignmentOptions.Center,
+                Color.white, 14f, 0f, 1f);
+            iconLabel.rectTransform.anchorMin = Vector2.zero;
+            iconLabel.rectTransform.anchorMax = Vector2.one;
+            iconLabel.rectTransform.pivot = new Vector2(0.5f, 0.5f);
+            iconLabel.rectTransform.anchoredPosition = Vector2.zero;
+            iconLabel.rectTransform.sizeDelta = Vector2.zero;
+
+            var tooltip = buttonObject.AddComponent<TooltipSource>();
+            tooltip.Title = tooltipText;
+            tooltip.BodyText = tooltipText;
+        }
+
         // Rebuilt from the live set. Called at 4 Hz rather than per frame: a distance that updates 60 times a
         // second reads no better and costs a string build every frame.
         /// <summary>Redraw from a scan already taken, so one pass serves the panel and the state changes.</summary>
         internal static void Refresh(float? dps, double? damage, Dictionary<string, DamageCategory>? categories)
+        {
+            var fleetMode = DamageLoggingPatches.HasFleetShips();
+            if (!fleetMode)
+            {
+                _lastFleetShipCategories = null;
+                _expandedFleetShipId = null;
+                _expandedFleetShipName = null;
+            }
+            else if (_lastFleetShipCategories == null)
+            {
+                _lastFleetShipCategories = DamageLoggingPatches.GetFleetShipCategories();
+            }
+
+            RefreshCategories(dps, damage, categories, fleetMode, _expandedFleetShipId, _expandedFleetShipName);
+        }
+
+        private static void RefreshCategories(
+            float? dps,
+            double? damage,
+            Dictionary<string, DamageCategory>? categories,
+            bool fleetMode,
+            int? expandedFleetShipId,
+            string? expandedFleetShipName)
         {
             var body = _body;
             var title = _title;
@@ -284,9 +435,40 @@ namespace VGParserMod
             var rowIndex = 0;
             var chartWidth = _width;
             var chartHeight = 0f;
+            var flagshipId = GameplayManager.Instance?.spaceShip?.GetInstanceID().ToString();
+            var fleetOverview = fleetMode && !expandedFleetShipId.HasValue;
 
-            foreach (var c in categories.Values.OrderByDescending(x => x.GetTotalDamage()))
+            if (fleetMode && expandedFleetShipId.HasValue)
             {
+                var detailHeader = new GameObject("FleetDetailHeader");
+                var detailHeaderRect = detailHeader.AddComponent<RectTransform>();
+                detailHeaderRect.SetParent(_chartRoot != null ? _chartRoot.transform : null, false);
+                detailHeaderRect.anchorMin = new Vector2(0f, 1f);
+                detailHeaderRect.anchorMax = new Vector2(0f, 1f);
+                detailHeaderRect.pivot = new Vector2(0f, 1f);
+                detailHeaderRect.sizeDelta = new Vector2(chartWidth, 18f);
+                detailHeaderRect.anchoredPosition = new Vector2(0f, -chartHeight);
+                AddFleetNavigationButton(detailHeader.transform, "<", "Back to fleet", CollapseFleetShip);
+
+                var detailLabel = CreateText(detailHeader.transform, expandedFleetShipName ?? "Fleet ship",
+                    new Vector2(28f, 0f), TextAlignmentOptions.Left, Color.white, 13f, 0f, 0f);
+                detailLabel.rectTransform.anchorMin = new Vector2(0f, 0f);
+                detailLabel.rectTransform.anchorMax = new Vector2(0f, 1f);
+                detailLabel.rectTransform.pivot = new Vector2(0f, 0.5f);
+                detailLabel.rectTransform.anchoredPosition = new Vector2(28f, 0f);
+                detailLabel.rectTransform.sizeDelta = new Vector2(Mathf.Min(230f, chartWidth * 0.7f), 18f);
+                detailLabel.textWrappingMode = TextWrappingModes.NoWrap;
+                detailLabel.raycastTarget = false;
+                chartHeight += 20f;
+            }
+
+            foreach (var entry in categories.OrderByDescending(x => x.Value.GetTotalDamage()))
+            {
+                var c = entry.Value;
+                var fleetShipId = 0;
+                var hasExpandButton = fleetOverview && int.TryParse(entry.Key, out fleetShipId);
+                var labelLeft = hasExpandButton ? 28f : 6f;
+                var isFlagship = fleetOverview && entry.Key == flagshipId;
                 var ratio = maxCategoryTotal > 0d ? Math.Clamp(c.GetTotalDamage() / maxCategoryTotal, 0d, 1d) : 0d;
                 var totalPercent = c.GetTotalDamage() / (damage ?? 1d);
                 var valueText = $"{letterFormat((float)c.GetTotalDamage())} ({letterFormat((float)c.dps)}, {totalPercent:P0})";
@@ -401,9 +583,11 @@ namespace VGParserMod
                     segmentImage.sprite = CreateSolidSprite();
                     segmentImage.type = Image.Type.Simple;
                     var baseColor = segmentDef.Type.GetColor();
-                    var shadedColor = i == 0
-                        ? new Color(baseColor.r, baseColor.g, baseColor.b, baseColor.a)
-                        : new Color(Mathf.Clamp(baseColor.r * 0.82f, 0f, 1f), Mathf.Clamp(baseColor.g * 0.82f, 0f, 1f), Mathf.Clamp(baseColor.b * 0.82f, 0f, 1f), baseColor.a);
+                    var shadedColor = fleetOverview
+                        ? isFlagship ? new Color(0.25f, 0.26f, 0.28f, 1f) : new Color(0.60f, 0.62f, 0.65f, 1f)
+                        : i == 0
+                            ? new Color(baseColor.r, baseColor.g, baseColor.b, baseColor.a)
+                            : new Color(Mathf.Clamp(baseColor.r * 0.82f, 0f, 1f), Mathf.Clamp(baseColor.g * 0.82f, 0f, 1f), Mathf.Clamp(baseColor.b * 0.82f, 0f, 1f), baseColor.a);
                     segmentImage.color = shadedColor;
                     segmentImage.raycastTarget = false;
 
@@ -430,12 +614,12 @@ namespace VGParserMod
                     }
                 }
 
-                var label = CreateText(row.transform, labelText, new Vector2(6f, 0f), TextAlignmentOptions.Left, Color.white, 13f, 0f, 0f);
+                var label = CreateText(row.transform, labelText, new Vector2(labelLeft, 0f), TextAlignmentOptions.Left, Color.white, 13f, 0f, 0f);
                 label.rectTransform.anchorMin = new Vector2(0f, 0f);
                 label.rectTransform.anchorMax = new Vector2(0f, 1f);
                 label.rectTransform.pivot = new Vector2(0f, 0.5f);
-                label.rectTransform.anchoredPosition = new Vector2(6f, 0f);
-                label.rectTransform.sizeDelta = new Vector2(Mathf.Min(230f, chartWidth * 0.7f), 18f);
+                label.rectTransform.anchoredPosition = new Vector2(labelLeft, 0f);
+                label.rectTransform.sizeDelta = new Vector2(Mathf.Min(230f, chartWidth * 0.7f) - (labelLeft - 6f), 18f);
                 label.textWrappingMode = TextWrappingModes.NoWrap;
                 label.overflowMode = TextOverflowModes.Overflow;
                 label.fontStyle = FontStyles.Bold;
@@ -457,6 +641,12 @@ namespace VGParserMod
                 if (labelSort != null)
                 {
                     labelSort.SetAsLastSibling();
+                }
+
+                if (hasExpandButton)
+                {
+                    AddFleetNavigationButton(row.transform, ">", "Show ship damage categories",
+                        () => ExpandFleetShip(fleetShipId));
                 }
             }
 
@@ -501,10 +691,7 @@ namespace VGParserMod
                 chart.sizeDelta = new Vector2(_width, chart.sizeDelta.y);
             }
 
-            if (_lastCategories != null)
-            {
-                Refresh(_lastDps, _lastDamage, _lastCategories);
-            }
+            if (_lastCategories != null) Refresh();
             SaveWidth();
         }
 
