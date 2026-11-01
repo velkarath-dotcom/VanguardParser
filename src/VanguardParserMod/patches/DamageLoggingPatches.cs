@@ -231,7 +231,7 @@ public static class DamageLoggingPatches
             var uiInfoTextParentType = Type.GetType(UiInfoTextParentTypeName, throwOnError: false);
             if (uiInfoTextParentType == null)
             {
-                Console.WriteLine($"[VGParserMod] DamageLoggingPatches: {UiInfoTextParentTypeName} could not be located.");
+                Plugin.Log.LogWarning($"DamageLoggingPatches: {UiInfoTextParentTypeName} could not be located.");
                 return;
             }
 
@@ -247,17 +247,17 @@ public static class DamageLoggingPatches
 
             if (showDamageNumber == null)
             {
-                Console.WriteLine("[VGParserMod] DamageLoggingPatches: UIInfoTextParent.ShowDamageNumber could not be located.");
+                Plugin.Log.LogWarning("DamageLoggingPatches: UIInfoTextParent.ShowDamageNumber could not be located.");
                 return;
             }
 
             harmony.Patch(showDamageNumber, prefix: new HarmonyMethod(typeof(DamageLoggingPatches).GetMethod(nameof(LogDamageNumberPrefix), BindingFlags.Static | BindingFlags.NonPublic)!));
 
-            Console.WriteLine("[VGParserMod] DamageLoggingPatches: registered UIInfoTextParent.ShowDamageNumber patch.");
+            Plugin.Log.LogInfo("DamageLoggingPatches: registered UIInfoTextParent.ShowDamageNumber patch.");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[VGParserMod] DamageLoggingPatches registration failed: {ex}");
+            Plugin.Log.LogError($"DamageLoggingPatches registration failed: {ex}");
         }
     }
 
@@ -284,7 +284,7 @@ public static class DamageLoggingPatches
         try
         {
             var message = $"[VGParserMod] {patchName} failed; allowing the game method to continue: {exception}";
-            Console.WriteLine(message);
+            Plugin.Log.LogError(message);
             WriteLog(message);
         }
         catch

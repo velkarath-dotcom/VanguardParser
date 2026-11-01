@@ -74,8 +74,8 @@ namespace VGParserMod
             // Logged on every request, so a keypress that reaches us is visible even when nothing appears: the
             // first report of this panel was "not displayed", and silence cannot distinguish a hotkey that never
             // fired from a panel that failed to draw.
-            Console.WriteLine($"panel toggle requested (was {(_open ? "open" : "closed")}, "
-                               + $"built {(_root != null ? "yes" : "no")})");
+            Plugin.Log.LogInfo($"Panel toggle requested (was {(_open ? "open" : "closed")}, "
+                               + $"built {(_root != null ? "yes" : "no")}).");
             if (_root == null && !Build()) return;
             var root = _root!;
             _open = !_open;
@@ -728,8 +728,7 @@ namespace VGParserMod
                     if (!_warned)
                     {
                         _warned = true;
-                        Console.WriteLine("no game text label to clone a font from, so the panel cannot be "
-                                              + "drawn. The settings tab still shows the same list.");
+                        Plugin.Log.LogWarning("No game text label was found to clone a font from; the panel cannot be drawn.");
                     }
                     return false;
                 }
@@ -870,12 +869,12 @@ namespace VGParserMod
                 chartMask.softness = Vector2Int.zero;
 
                 _root.SetActive(false);
-                Console.WriteLine("Panel built");
+                Plugin.Log.LogInfo("Panel built.");
                 return true;
             }
             catch (Exception e)
             {
-               Console.WriteLine($"panel could not be built: {e.Message}");
+                Plugin.Log.LogError($"Panel could not be built: {e}");
                 Dispose();
                 return false;
             }

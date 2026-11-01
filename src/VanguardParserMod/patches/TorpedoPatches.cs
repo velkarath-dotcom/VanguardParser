@@ -41,11 +41,11 @@ public static class TorpedoPatches
                 harmony.Patch(areaDamageFactoryLegacy, postfix: new HarmonyMethod(typeof(TorpedoPatches).GetMethod(nameof(MarkAreaDamageFromTorpedoPostfixLegacy), BindingFlags.Static | BindingFlags.NonPublic)!));
             }
 
-            Console.WriteLine("[VGParserMod] TorpedoPatches: registered torpedo lifecycle and torpedo area-damage patches.");
+            Plugin.Log.LogInfo("TorpedoPatches: registered torpedo lifecycle and torpedo area-damage patches.");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[VGParserMod] TorpedoPatches registration failed: {ex}");
+            Plugin.Log.LogError($"TorpedoPatches registration failed: {ex}");
         }
     }
 

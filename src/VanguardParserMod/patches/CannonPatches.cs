@@ -30,11 +30,11 @@ public static class CannonPatches
                 harmony.Patch(areaDamageFactory, postfix: new HarmonyMethod(typeof(CannonPatches).GetMethod(nameof(MarkAreaDamageFromCannonPostfix), BindingFlags.Static | BindingFlags.NonPublic)!));
             }
 
-            Console.WriteLine("[VGParserMod] CannonPatches: registered cannon explosion attribution patch.");
+            Plugin.Log.LogInfo("CannonPatches: registered cannon explosion attribution patch.");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[VGParserMod] CannonPatches registration failed: {ex}");
+            Plugin.Log.LogError($"CannonPatches registration failed: {ex}");
         }
     }
 

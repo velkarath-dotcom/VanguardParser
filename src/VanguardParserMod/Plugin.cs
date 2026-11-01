@@ -27,20 +27,26 @@ public class Plugin : BaseUnityPlugin
     internal static ConfigEntry<float> PanelWidthSetting { get; private set; } = null!;
 
     private Harmony _harmony = null!;
+    private bool _updateFailureLogged;
 
     private void Awake()
     {
         Instance = this;
         Log = Logger;
+        Log.LogInfo($"{PluginName} v{PluginVersion} initializing.");
         WriteLogSetting = Config.Bind("Logging", "writeLog", false, "If true, damage logs are written to disk.");
         LogFileNameSetting = Config.Bind("Logging", "logFileName", "combatlog.txt", "Filename used for the damage log when file logging is enabled.");
         PanelPositionSetting = Config.Bind("Panel", "panelPosition", "24,-120", "Saved panel position as x,y anchored coordinates.");
         PanelWidthSetting = Config.Bind("Panel", "panelWidth", 1000f, "Saved panel width in pixels.");
 
         _harmony = new Harmony(PluginGuid);
+    Log.LogInfo("Registering damage logging patches.");
         DamageLoggingPatches.Register(_harmony);
+    Log.LogInfo("Registering torpedo patches.");
         TorpedoPatches.Register(_harmony);
+    Log.LogInfo("Registering cannon patches.");
         CannonPatches.Register(_harmony);
+    Log.LogInfo("Applying attribute patches.");
         _harmony.PatchAll();
 
         Log.LogInfo($"{PluginName} v{PluginVersion} loaded ({_harmony.GetPatchedMethods().Count()} patches)");
@@ -52,6 +58,8 @@ public class Plugin : BaseUnityPlugin
 
     private void Update()
     {
+        try
+        {
         var currentShip = Source.Player.GamePlayer.current?.currentSpaceShip;
         var currentDockingState = currentShip?.dockingState;
         var undockedThisFrame = currentShip != null
@@ -88,6 +96,15 @@ public class Plugin : BaseUnityPlugin
             else
             {
                 Panel.Refresh(dps, damage, DamageLoggingPatches.GetDamageByCategory());
+            }
+        }
+        }
+        catch (Exception ex)
+        {
+            if (!_updateFailureLogged)
+            {
+                _updateFailureLogged = true;
+                Log.LogError($"Plugin update failed: {ex}");
             }
         }
     }
