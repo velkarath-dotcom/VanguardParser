@@ -8,6 +8,7 @@ using Behaviour.Weapons;
 using Behaviour.Unit;
 using HarmonyLib;
 using Source.Combat;
+using Source.Util;
 using UnityEngine;
 using VGParserMod;
 
@@ -204,6 +205,10 @@ public static class DamageLoggingPatches
         CurrentPlayerShipCategory = null;
         PlayerOutgoingTotalDamage = 0d;
         PlayerOutgoingDamageFirstSeenUtc = null;
+        LastPlayerDamageDoneUtc = null;
+        PlayerIncomingTotalDamage = 0d;
+        PlayerIncomingDamageFirstSeenUtc = null;
+        LastPlayerDamageTakenUtc = null;
         PlayerDamagePerSecondValue = 0f;
     }
 
@@ -215,6 +220,12 @@ public static class DamageLoggingPatches
             if (takeDamage != null)
             {
                 harmony.Patch(takeDamage, prefix: new HarmonyMethod(typeof(DamageLoggingPatches).GetMethod(nameof(CaptureOriginalDamagePrefix), BindingFlags.Static | BindingFlags.NonPublic)!));
+            }
+
+            var loadSaveGame = typeof(SaveGame).GetMethod(nameof(SaveGame.LoadStateStaged), BindingFlags.Static | BindingFlags.Public);
+            if (loadSaveGame != null)
+            {
+                harmony.Patch(loadSaveGame, prefix: new HarmonyMethod(typeof(DamageLoggingPatches).GetMethod(nameof(ClearCurrentDamage), BindingFlags.Static | BindingFlags.Public)!));
             }
 
             var uiInfoTextParentType = Type.GetType(UiInfoTextParentTypeName, throwOnError: false);
@@ -443,7 +454,10 @@ public static class DamageLoggingPatches
             var droneSourceUnit = sourceUnit as Drone
                 ?? data.source?.GetComponentInParent<Drone>()
                 ?? sourceTurret?.GetComponentInParent<Drone>();
-            var shipSourceUnit = droneSourceUnit?.droneCommander ?? sourceUnit;
+            var fighterSourceShip = sourceUnit as SpaceShip;
+            var shipSourceUnit = droneSourceUnit?.droneCommander
+                ?? (fighterSourceShip?.isCarrierFighter == true ? fighterSourceShip.carrierCommander : null)
+                ?? sourceUnit;
             var targetUnit = targetUnitOverride ?? data.targetUnit as AbstractUnit;
             var critCount = data.critCount;
             var isReflectedDamage = data.reflectedDamage;

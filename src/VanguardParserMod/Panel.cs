@@ -243,9 +243,11 @@ namespace VGParserMod
             if (selectedShip != null)
             {
                 categories = selectedShip.DamageCategories
-                    .GroupBy(category => category.Name, StringComparer.OrdinalIgnoreCase)
-                    .Select(group => group.First())
-                    .ToDictionary(category => category.Name, category => category, StringComparer.OrdinalIgnoreCase);
+                    .Select((category, index) => new { category, index })
+                    .ToDictionary(
+                        entry => $"{entry.index}:{entry.category.Name}",
+                        entry => entry.category,
+                        StringComparer.OrdinalIgnoreCase);
                 _expandedFleetShipName = selectedShip.ShipName;
             }
             else
@@ -432,6 +434,14 @@ namespace VGParserMod
             }
 
             var maxCategoryTotal = categories.Values.Max(x => x.GetTotalDamage());
+            var percentageBaseDamage = fleetMode && expandedFleetShipId.HasValue
+                ? categories.Values.Sum(category => category.GetTotalDamage())
+                : damage ?? 1d;
+            if (percentageBaseDamage <= 0d)
+            {
+                percentageBaseDamage = 1d;
+            }
+
             var rowIndex = 0;
             var chartWidth = _width;
             var chartHeight = 0f;
@@ -470,7 +480,7 @@ namespace VGParserMod
                 var labelLeft = hasExpandButton ? 28f : 6f;
                 var isFlagship = fleetOverview && entry.Key == flagshipId;
                 var ratio = maxCategoryTotal > 0d ? Math.Clamp(c.GetTotalDamage() / maxCategoryTotal, 0d, 1d) : 0d;
-                var totalPercent = c.GetTotalDamage() / (damage ?? 1d);
+                var totalPercent = c.GetTotalDamage() / percentageBaseDamage;
                 var valueText = $"{letterFormat((float)c.GetTotalDamage())} ({letterFormat((float)c.dps)}, {totalPercent:P0})";
                 var labelText = c.Name;
 
