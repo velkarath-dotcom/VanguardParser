@@ -17,7 +17,7 @@ public class Plugin : BaseUnityPlugin
     public const string PluginName = "VG Parser";
     // BepInEx parses PluginVersion through System.Version which rejects SemVer
     // pre-release suffixes, so stick to the plain N.N.N form.
-    public const string PluginVersion = "0.20.1";
+    public const string PluginVersion = "0.2.1";
 
     internal static Plugin Instance { get; private set; } = null!;
     internal static ManualLogSource Log { get; private set; } = null!;
